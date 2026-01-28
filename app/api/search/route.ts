@@ -2,68 +2,74 @@ import { NextRequest, NextResponse } from "next/server";
 
 export async function POST(request: NextRequest) {
   try {
-    const { query } = await request.json();
+    const { keywords, startDate, endDate } = await request.json();
 
-    if (!query) {
-      return NextResponse.json({ error: "Query is required" }, { status: 400 });
+    if (!keywords) {
+      return NextResponse.json({ error: "Keywords required" }, { status: 400 });
     }
 
-    const apiKey = process.env.GEMINI_API_KEY;
+    const apiKey = process.env.GNEWS_API_KEY;
 
     if (!apiKey) {
-      return NextResponse.json({ error: "Gemini API key not configured" }, { status: 500 });
+      return NextResponse.json({ error: "GNews API key not configured" }, { status: 500 });
+    }
+
+    // Build the GNews API URL
+    const params = new URLSearchParams({
+      q: keywords,
+      token: apiKey,
+      lang: "en",
+      max: "50",
+    });
+
+    // Add date filters if provided (GNews uses from/to format)
+    if (startDate) {
+      params.append("from", `${startDate}T00:00:00Z`);
+    }
+    if (endDate) {
+      params.append("to", `${endDate}T23:59:59Z`);
     }
 
     const response = await fetch(
-      `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
-      {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          contents: [
-            {
-              parts: [{ text: query }],
-            },
-          ],
-          tools: [
-            {
-              googleSearch: {},
-            },
-          ],
-        }),
-      }
+      `https://gnews.io/api/v4/search?${params.toString()}`
     );
 
+    const data = await response.json();
+
     if (!response.ok) {
-      const errorData = await response.text();
-      console.error("Gemini API error:", errorData);
+      console.error("GNews API error:", data);
       return NextResponse.json(
-        { error: "Failed to fetch from Gemini API", details: errorData },
+        { error: data.errors?.[0] || "Failed to fetch news" },
         { status: response.status }
       );
     }
 
-    const data = await response.json();
-    
-    // Extract text from Gemini response
-    let textContent = "";
-    if (data.candidates && data.candidates[0]?.content?.parts) {
-      for (const part of data.candidates[0].content.parts) {
-        if (part.text) {
-          textContent += part.text;
-        }
-      }
-    }
+    // Transform GNews response to our format
+    const articles = (data.articles || []).map((article: any, index: number) => ({
+      id: index + 1,
+      title: article.title || "Untitled",
+      publisher: article.source?.name || "Unknown Source",
+      publishedDate: article.publishedAt
+        ? new Date(article.publishedAt).toLocaleDateString("en-US", {
+            year: "numeric",
+            month: "short",
+            day: "numeric",
+          })
+        : "Recent",
+      publishedTime: article.publishedAt
+        ? new Date(article.publishedAt).toLocaleTimeString("en-US", {
+            hour: "2-digit",
+            minute: "2-digit",
+          })
+        : "",
+      summary: article.description || "Click to read more",
+      url: article.url || "#",
+      imageUrl: article.image || null,
+    }));
 
-    // Extract grounding metadata (sources) if available
-    const groundingMetadata = data.candidates?.[0]?.groundingMetadata;
-    
-    return NextResponse.json({ 
-      text: textContent,
-      groundingMetadata: groundingMetadata,
-      raw: data 
+    return NextResponse.json({
+      articles,
+      totalResults: data.totalArticles || articles.length,
     });
   } catch (error) {
     console.error("Search API error:", error);
